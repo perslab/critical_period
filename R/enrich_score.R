@@ -28,7 +28,9 @@ enrich_score <- function(seur, knn, col) {
             true = max(scores[is.finite(scores)]) + .5,
             false = scores)
   p_scores <- scales::rescale(scores, c(-1,1))
+  # build a data frame to predict labels
   dat <- data.frame(vec = vec, Embeddings(seur, reduction = "pca"))
+  # predict labels w/random forest and retain probabilities
   rf_pred <- predictions(ranger::ranger(vec ~ .,data = dat, probability = T))[,1]
   score_name <- paste0(col, "_enrichscore")
   cont_name <- paste0(col, "_rf")
