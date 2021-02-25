@@ -1,4 +1,9 @@
-##' .. content for \description{} (no empty lines) ..
+##' \description{ This function is used to interpolate gene expression over time
+##' With time series data with no branching, this may make more sense
+##' To use than to try to construct cell pseudotime, gam model is 
+##' inspired from this link: https://peerj.com/articles/6876/?td=tw#supplemental-information
+##' here I use a global smoother to share information across groups, but allow for an
+##' individual smooth and individual wiggliness across groups} 
 ##'
 ##' .. content for \details{} ..
 ##'

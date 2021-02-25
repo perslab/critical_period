@@ -14,7 +14,7 @@
 ##' inspired by https://github.com/kstreet13/bioc2020trajectories/blob/master/R/imbalance_score.R
 ##' probably adjust prob for each timepoint?
 
-enrich_score <- function(seur, knn, col) {
+enrich_score <- function(seur, knn, col, dims) {
 
   vec <- factor(seur[[col]][,1])
   prop <- as.vector(table(vec) / length(vec))[1]
@@ -29,7 +29,7 @@ enrich_score <- function(seur, knn, col) {
             false = scores)
   p_scores <- scales::rescale(scores, c(-1,1))
   # build a data frame to predict labels
-  dat <- data.frame(vec = vec, Embeddings(seur, reduction = "pca"))
+  dat <- data.frame(vec = vec, Embeddings(seur, reduction = "pca")[,c(1:dims)])
   # predict labels w/random forest and retain probabilities
   rf_pred <- predictions(ranger::ranger(vec ~ .,data = dat, probability = T))[,1]
   score_name <- paste0(col, "_enrichscore")
