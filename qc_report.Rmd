@@ -1,0 +1,140 @@
+---
+title: "Single Cell QC"
+author: "Dylan Rausch"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+params:
+  par: "default value"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(tidyverse.quiet = TRUE)
+```
+
+This report contains the results of a minimal `targets` data analysis pipeline. We reference our targets with `tar_load()` and `tar_read()`. This ensures
+
+1. Because of the `tar_render()` function from the [`tarchetypes`](https://wlandau.github.io/tarchetypes) package (see `_targets.R`) `targets` automatically detects the dependencies of this report and rebuilds it when its dependencies change.
+1. We can run the report by itself if the targets are already in the `_targets/` data store.
+
+Here is our fitted regression model of ozone versus wind and temperature.
+
+```{r}
+library(targets)
+```
+
+Load the SCE object of interest
+```{r}
+# parameter is defined in the YAML header (specifies branch object to select)
+branch <- params$par
+tar_load(sce_objects, branches=branch)
+sce_objects <- sce_objects[[1]]
+sce_objects
+```
+
+```{r}
+# Global classification results
+table(sce_objects$hto_global)
+```
+
+```{r}
+table(sce_objects$hto_global, sce_objects$discard)
+```
+
+# Visualize enrichment for selected HTOs with ridge plots (rebuild seurat object with HTO)
+```{r warning=FALSE, fig.width=10, fig.height=5}
+seur.hto <- as.Seurat(altExp(sce_objects, "hto"), counts = "counts", data=NULL)
+seur.hto <- NormalizeData(seur.hto, normalization.method = "CLR")
+seur.hto$hash_id <- sce_objects$hash_id
+seur.hto$hto_global <- sce_objects$hto_global
+seur.hto$hash_max <- sce_objects$hash_max
+
+# Group cells based on the max HTO signal
+Idents(seur.hto) <- "hash_max"
+RidgePlot(seur.hto, features = rownames(seur.hto), ncol = 3)
+```
+
+```{r include=FALSE}
+plot <- determine_quantile(seur.hto)
+```
+
+# Analyze quantile selection
+```{r}
+plot[[1]] %>% pivot_longer(-quant) %>% filter(quant!=1) %>% ggplot() + 
+    aes(x=quant, y=value, color=name) + geom_point(size=0.5) + geom_line() +
+    geom_vline(xintercept = plot[[2]], linetype="dashed")
+```
+
+# Analyze intra-sample doublets
+```{r}
+# calculate number of neighbors at each proportion that are doublets
+sce_objects$proportion_dub_neighbors %>% 
+    data.frame("prop"=.) %>% 
+    group_by(prop) %>% 
+    summarize(n=n()) %>% 
+    mutate(pct = n/sum(n)) -> data 
+
+# find point at which we gain very few doublets as proportion increases 
+cut <- data$prop[PCAtools::findElbowPoint(variance = sort(data$n, decreasing = T))+1]
+
+# plot number of neighbors at different proportions
+ggplot(data) + 
+  aes(x=prop, y=n) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = cut)
+```
+
+# look at which cells are filtered from which groups
+```{r fig.width=10, fig.height=5}
+gridExtra::grid.arrange(
+    plotColData(sce_objects, x="hash_max", y="sum", colour_by="discard") +
+        scale_y_log10() + ggtitle("Total count"),
+    plotColData(sce_objects, x="hash_max", y="detected", colour_by="discard") +
+        scale_y_log10() + ggtitle("Detected features"),
+    plotColData(sce_objects, x="hash_max", y="sum", colour_by="hto_global") + 
+      scale_y_log10() + ggtitle("Hash Calls"),
+    plotColData(sce_objects, x="hto_global", y="sum", colour_by = "hto_global") + 
+      scale_y_log10() + ggtitle("Total Count"),
+    ncol=2
+)
+```
+
+# Visualize distribution of counts across hashes
+```{r}
+plotColData(sce_objects, x="hto_global", y="detected", colour_by="discard", other_fields = "hash_max") +
+        scale_y_log10() + ggtitle("Total count") +
+  facet_wrap(~hash_max)
+```
+
+# Identify location of doublets in TSNE space, also location of intra-sample doublets
+```{r fig.width=10, fig.height=4}
+sce_objects <- runTSNE(sce_objects, dimred="PCA")
+gridExtra::grid.arrange(
+    plotTSNE(sce_objects, colour_by="proportion_dub_neighbors") + 
+      ggtitle("Doublet proportions") +
+      theme(legend.position = "none"),
+    plotTSNE(sce_objects, colour_by="doublet") + ggtitle("Known doublets"),
+    ggcells(sce_objects) +
+        geom_point(aes(x=TSNE.1, y=TSNE.2), color="grey") +
+        geom_point(aes(x=TSNE.1, y=TSNE.2), color="red", 
+            data=function(x) x[x$predicted_dub_cut,]) +
+        ggtitle("Predicted intra-sample doublets") +
+      theme(legend.position = "none"),
+    ncol = 3     
+)
+```
+
+# Generate a two dimensional tSNE embedding for HTOs.Here we are grouping cells by singlets and doublets for simplicity.
+```{r}
+Idents(seur.hto) <- "hto_global"
+# Calculate a distance matrix using HTO
+hto.dist.mtx <- as.matrix(dist(t(GetAssayData(object = seur.hto))))
+# Calculate tSNE embeddings with a distance matrix
+seur.hto <- RunTSNE(seur.hto, distance.matrix = hto.dist.mtx, perplexity = 100)
+DimPlot(seur.hto)
+```
+
+
+
+
