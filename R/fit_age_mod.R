@@ -54,7 +54,7 @@ library(future)
 
 
 
-fit_age_mod <- function(seur_obj, group = "wt", workers=40) {
+fit_maturation_model <- function(seur_obj, group = "wt", workers=40, min.pct = .01) {
   
   if (group == "chow") {
     dat <- subset(seur_obj, subset = diet == "CHOW" & geno == "wt")
@@ -65,45 +65,64 @@ fit_age_mod <- function(seur_obj, group = "wt", workers=40) {
   } else if (group == "wt") {
     dat <- subset(seur_obj, subset = geno == "wt") 
   }
-
-  data <-
-    dat@assays$SCT@counts[c("Agrp", "Npy", "Lncpint"),] %>%
-    Matrix::t() %>%
-    cbind(dat[[]] %>% dplyr::select(age, predicted.id, hash_id, sex_call, hash_pool)) %>%
-    pivot_longer(c(-age, -predicted.id, -hash_id, -sex_call, -hash_pool)) %>%
-    filter(age < 40)
-
+  
+  # filter genes to those which are detected in at least 1% of cells more than once
+  min_cells <- round(min.pct*ncol(dat@assays$SCT@counts))
+  keep_genes <- rowSums(dat@assays$SCT@counts > 1) > min_cells
+  
+  # only model on clusters with > 100 cells in the arcuate
   not_arc <- paste(paste0("n", c("01", "06", 16:18, 29:31, 33:34)), collapse = "|")
-
-  keep <-
+  keep_clus <-
     dat[[]] %>%
-    count(predicted.id) %>%
+    dplyr::count(predicted.id) %>%
     filter(n > 100) %>%
     pull(predicted.id)
+  keep_clus <- keep_clus[!grepl(not_arc, keep_clus)]
+  
+  # filter genes and add metadata to gene expression matrix
+  data <-
+    dat@assays$SCT@counts[keep_genes,] %>%
+    Matrix::t() %>%
+    cbind(dat[[]] %>% 
+            dplyr::select(
+              age, predicted.id, hash_id, sex_call, hash_pool
+              ) %>% 
+            mutate(
+              age = as.numeric(age), 
+              sex = factor(sex_call)
+              )
+          )
 
-  keep <- keep[!grepl(not_arc, keep)]
-
-  nest_data <-
+  # convert matrix to a nested data.table, each gene is a row and all 
+  # info is nested in the data column. data.table is significantly faster and
+  # we run out of memory using dplyr::nest
+  dt.long <- 
     data %>% 
-    filter(predicted.id %in% keep) %>%
+    filter(
+      predicted.id %in% keep_clus,
+      age < 40
+      ) %>% 
     mutate(
-      age = as.numeric(age),
       hash = droplevels(hash_id),
-      sex = factor(sex_call),
       clus = droplevels(factor(predicted.id)),
       litter = droplevels(factor(str_split(hash, "-", simplify = T)[, 1])),
       hpool = droplevels(factor(hash_pool))
-    ) %>%
-    nest(data = !name)
+      ) %>% 
+    dplyr::select(
+      -predicted.id, -hash_id, -sex_call, -hash_pool 
+    ) %>% 
+    data.table::data.table() %>% 
+    tidyfast::dt_pivot_longer(., c(-age, -clus, -hash, -sex, -hpool, -litter)) %>% 
+    tidyfast::dt_nest(., name)
   
   if(!is.null(workers)) {
     plan("multisession", workers = workers)
   } else {
     plan("sequential")
   }
-  
+
   shared_age <-
-    furrr::future_map(nest_data$data, function(x) {
+    furrr::future_map(dt.long$data, function(x) {
       age_shared <- .fit_age_re(x)
       age_spec <- .fit_cluster_slope_re(x)
       summ_shared <- summary(age_shared)
@@ -120,7 +139,7 @@ fit_age_mod <- function(seur_obj, group = "wt", workers=40) {
       padj_age = p.adjust(p_age),
       age_coef = map_dbl(summ_shared, ~ .x$p.coeff[["age"]]),
       slope_coef = map(summ_spec,  ~ .x$p.coeff[2:length(.x$p.coeff)]),
-      gene = nest_data$name
+      gene = dt.long$name
     )
   
   return(shared_age)
