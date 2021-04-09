@@ -15,6 +15,9 @@ library(tidyverse)
 library(Seurat)
 library(furrr)
 library(future)
+library(Matrix)
+library(progressr)
+handlers(global = TRUE)
 
 # build a model to get slope of each gene within each cluster
 # by age. Use mgcv to speed up calculations in large data-sets
@@ -52,7 +55,26 @@ library(future)
   data = data, method = "fREML", family="nb", discrete=T)
 }
 
+# generate model outputs
 
+.gen_preds <- function(data, model) {
+  new_data <- tidyr::expand(data, nesting(hash, age, litter, hpool, sex),clus = unique(clus))
+  preds <- bind_cols(new_data, as.data.frame(predict(model, newdata = new_data, se.fit = TRUE)))
+  return(preds)
+}
+
+.get_model_summs <- function(x) {
+  p <- progressr::progressor(along = x)
+  future.apply::future_lapply(x, function(df, ...) {
+    age_shared <- .fit_age_re(df)
+    age_spec <- .fit_cluster_slope_re(df)
+    summ_shared <- summary(age_shared)
+    summ_spec <- summary(age_spec)
+    preds <- .gen_preds(data = df, model = age_shared)
+    p()
+    return(tibble(summ_shared = list(summ_shared), summ_spec = list(summ_spec), preds = list(preds)))
+  })
+}
 
 fit_maturation_model <- function(seur_obj, group = "wt", workers=40, min.pct = .01) {
   
@@ -68,7 +90,7 @@ fit_maturation_model <- function(seur_obj, group = "wt", workers=40, min.pct = .
   
   # filter genes to those which are detected in at least 1% of cells more than once
   min_cells <- round(min.pct*ncol(dat@assays$SCT@counts))
-  keep_genes <- rowSums(dat@assays$SCT@counts > 1) > min_cells
+  keep_genes <- Matrix::rowSums(dat@assays$SCT@counts > 1) > min_cells
   
   # only model on clusters with > 100 cells in the arcuate
   not_arc <- paste(paste0("n", c("01", "06", 16:18, 29:31, 33:34)), collapse = "|")
@@ -100,7 +122,8 @@ fit_maturation_model <- function(seur_obj, group = "wt", workers=40, min.pct = .
     data %>% 
     filter(
       predicted.id %in% keep_clus,
-      age < 40
+      age < 40,
+      age > 0 
       ) %>% 
     mutate(
       hash = droplevels(hash_id),
@@ -115,21 +138,17 @@ fit_maturation_model <- function(seur_obj, group = "wt", workers=40, min.pct = .
     tidyfast::dt_pivot_longer(., c(-age, -clus, -hash, -sex, -hpool, -litter)) %>% 
     tidyfast::dt_nest(., name)
   
+  print("requesting cores")
+  
   if(!is.null(workers)) {
     plan("multisession", workers = workers)
   } else {
     plan("sequential")
   }
-
-  shared_age <-
-    furrr::future_map(dt.long$data, function(x) {
-      age_shared <- .fit_age_re(x)
-      age_spec <- .fit_cluster_slope_re(x)
-      summ_shared <- summary(age_shared)
-      summ_spec <- summary(age_spec)
-      return(tibble(summ_shared = list(summ_shared), summ_spec = list(summ_spec)))
-    }, .progress = T) %>%
-    bind_rows()
+  
+  print("got cores")
+  
+  shared_age <- bind_rows(.get_model_summs(dt.long$data))
   
   shared_age <-  
     shared_age %>% 
