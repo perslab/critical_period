@@ -19,6 +19,7 @@ library(Matrix)
 library(progressr)
 handlers(global = TRUE)
 
+# think about markov random fields
 # build a model to get slope of each gene within each cluster
 # by age. Use mgcv to speed up calculations in large data-sets
 # include a random intercept for cluster (we dont care that expression 
@@ -28,14 +29,14 @@ handlers(global = TRUE)
 # of sex
 
 .fit_cluster_slope_re <- function(data) {
-  bam(value ~ 0 + age:clus + sex +
+  bam(value ~ 0 + age:clus + 
+    s(clus, sex, bs="re") +  
     s(clus, bs="re") +
     s(hash, bs = "re") +
     s(litter, bs="re") +
     s(hpool, bs="re"),
-  data = data, method = "fREML", family="nb", discrete=T)
+  data = data, method = "REML", family = nb)
 }
-
 
 # build a model to get slope of each gene across all populations by
 # by age. Use mgcv to speed up calculations in large data-sets
@@ -46,35 +47,24 @@ handlers(global = TRUE)
 # of sex
 
 .fit_age_re <- function(data) {
-  bam(value ~ age + sex +
+  bam(value ~ age + 
     s(clus, bs = "re") +
     s(age, clus, bs = "re") +
+    s(age, sex, bs = "re") +
     s(hash, bs = "re") +
     s(litter, bs="re") +
     s(hpool, bs="re"),
-  data = data, method = "fREML", family="nb", discrete=T)
+  data = data, method = "REML", family = nb)
 }
 
 # generate model outputs
-
-.gen_preds <- function(data, model) {
-  new_data <- tidyr::expand(data, nesting(hash, age, litter, hpool, sex),clus = unique(clus))
-  preds <- bind_cols(new_data, as.data.frame(predict(model, newdata = new_data, se.fit = TRUE)))
-  return(preds)
-}
-
 .get_model_summs <- function(x) {
-  p <- progressr::progressor(along = x)
-  future.apply::future_lapply(x, function(df, ...) {
-    age_shared <- .fit_age_re(df)
-    age_spec <- .fit_cluster_slope_re(df)
+    age_shared <- .fit_age_re(x)
+    age_spec <- .fit_cluster_slope_re(x)
     summ_shared <- summary(age_shared)
     summ_spec <- summary(age_spec)
-    preds <- .gen_preds(data = df, model = age_shared)
-    p()
-    return(tibble(summ_shared = list(summ_shared), summ_spec = list(summ_spec), preds = list(preds)))
-  })
-}
+    return(tibble(summ_shared = list(summ_shared), summ_spec = list(summ_spec)))
+  }
 
 fit_maturation_model <- function(seur_obj, group = "wt", workers=40, min.pct = .01) {
   
@@ -148,18 +138,7 @@ fit_maturation_model <- function(seur_obj, group = "wt", workers=40, min.pct = .
   
   print("got cores")
   
-  shared_age <- bind_rows(.get_model_summs(dt.long$data))
-  
-  shared_age <-  
-    shared_age %>% 
-    mutate(
-      p_age = map_dbl(summ_shared, ~ .x$p.pv[["age"]]),
-      p_slope = map(summ_spec, ~ .x$p.pv[2:length(.x$p.pv)]),
-      padj_age = p.adjust(p_age),
-      age_coef = map_dbl(summ_shared, ~ .x$p.coeff[["age"]]),
-      slope_coef = map(summ_spec,  ~ .x$p.coeff[2:length(.x$p.coeff)]),
-      gene = dt.long$name
-    )
-  
+  shared_age <- furrr::future_map(dt.long$data, .get_model_summs, .progress = T)
+
   return(shared_age)
 }
