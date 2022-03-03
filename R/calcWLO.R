@@ -18,26 +18,26 @@
 
 require(tidylo)
 
-.countsperclus <- function(seur_obj, group=NULL, min.cell=100) {
+.countsperclus <- function(seur_obj, group=group, min.cell=100) {
   if(is.null(group)) {
     vec <- factor(as.character(Idents(seur_obj)))
   } else {
-    vec <- factor(seur_obj@meta.data[,group])
+    vec <- factor(seur_obj@meta.data[[group]])
   }
   mat.sparse <- seur_obj@assays$SCT@counts
   mm <- model.matrix(~ 0 + vec)
   colnames(mm) <- paste0("clus_", levels(vec))
   mm <- mm[,colSums(mm)>min.cell]
   mat.sum <- mat.sparse %*% mm
-  keep <- rowSums(mat.sum > 0) >= ncol(mat.sum)/3
+  keep <-  Matrix::rowSums(mat.sum > 0) >= ncol(mat.sum)/3
   mat.sum <- mat.sum[keep, ]
   return(mat.sum)
 }
 
 
-calcWLO <- function(seur_obj, prior, group, id1 = NULL, id2 = NULL, ...) {
+calcWLO <- function(seur_obj, prior, group= NULL, id1 = NULL, id2 = NULL, ...) {
 
-  cpg <- .countsperclus(seur_obj, group = NULL, ...)
+  cpg <- .countsperclus(seur_obj, group = group, ...)
   
   if(grepl("un", prior)) {
     cpg <-
@@ -54,6 +54,7 @@ calcWLO <- function(seur_obj, prior, group, id1 = NULL, id2 = NULL, ...) {
                       uninformative = TRUE, unweighted = TRUE) -> dat
     } else if(!is.null(id1)) {
       if(is.null(id2)) {
+        id1 <- paste0("clus_", id1)
         cpg %>% 
           mutate(group = if_else(group == id1, "group_1", "group_2")) %>% 
           group_by(gene, group) %>% 
@@ -61,6 +62,8 @@ calcWLO <- function(seur_obj, prior, group, id1 = NULL, id2 = NULL, ...) {
           bind_log_odds(set = group, feature = gene, n = value, 
                         uninformative = TRUE, unweighted = TRUE) -> dat
       } else {
+        id1 <- paste0("clus_", id1)
+        id2 <- paste0("clus_", id2)
         cpg %>% 
           mutate(group = case_when(group %in% id1 ~ "group_1",
                                    group %in% id2 ~ "group_2",

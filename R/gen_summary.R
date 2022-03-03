@@ -10,19 +10,22 @@
 ##' @import DropletUtils R2HTML rjson ggplot2 Matrix
 ##' @export
 
+source("R/print_HTML.R")
+
 gen_summary <- function(files, output_folder = "output") {
   
   # create output folder if does not exist, will spit out warning but continue if folder already exists
   dir.create(file.path(here::here(output_folder), "web_summary"))
   # get hash-pool name from expression file name
-  run <- unlist(str_match_all(files[[1]], ".*kallisto/(.*)\\/counts.*"))[2]
+  run <- unlist(str_match_all(files, ".*kallisto/(.*)\\/counts.*"))[2]
+  print(run)
   # load raw mtx
-  raw_mtx <- Matrix::readMM(files %>% str_subset("unspliced.mtx"))
+  raw_mtx <- Matrix::readMM(paste0(files, "/unspliced.mtx"))
   # load genes
-  genes <- data.table::fread(files %>% str_subset("unspliced.genes"), header = F)[, 1]
+  genes <- data.table::fread(paste0(files, "/unspliced.genes.txt"), header = F)[, 1]
   colnames(raw_mtx) <- genes[["V1"]]
   # attach barcodes
-  rownames(raw_mtx) <- data.table::fread(files %>% str_subset("unspliced.barcodes.txt"), header = F)[["V1"]]
+  rownames(raw_mtx) <- data.table::fread(paste0(files, "/unspliced.barcodes.txt"), header = F)[["V1"]]
   # transpose matrix for downstream steps
   raw_mtx <- Matrix::t(raw_mtx)
   # get probability that each barcode is a cell from the dropletUtils package (could probably be updated)
